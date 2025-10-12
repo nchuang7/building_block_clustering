@@ -65,6 +65,10 @@ df['Price_usd'] = df['Price'].apply(lambda x: f'${x:.2f}')
 # set color palette
 palette = q.Plotly  # other options: q.Set3, q.Bold, q.Dark24, q.Light24, q.Vivid
 
+# Initialize plot version in session state (used to force plot refresh)
+if 'plot_version' not in st.session_state:
+    st.session_state.plot_version = 0
+
 # create UMAP plot
 fig = px.scatter(
     df,
@@ -114,25 +118,71 @@ fig.update_layout(
 col_plot, col_details = st.columns([2, 1])
 
 with col_plot:
-    # display plot
-    selected = st.plotly_chart(fig, use_container_width=True, key='scatter_plot', on_select='rerun')
+    # display plot with a dynamic key to force refresh when needed
+    selected = st.plotly_chart(
+        fig, 
+        use_container_width=True, 
+        key=f'scatter_plot_{st.session_state.plot_version}',  # Dynamic key
+        on_select='rerun'
+    )
+
+    # Add reset button above the plot
+    if st.button('🔄  Reset Plot'):
+        # Increment plot version to force a fresh render with all traces visible
+        st.session_state.plot_version += 1
+        st.session_state.compound_index = 0
+        st.rerun()
+
+    st.markdown('---')
+    st.markdown('Double click on a cluster label to view single cluster. ' \
+    'Single click to view or hide additional clusters')
 
 with col_details:
+    # Use the dynamic key to access the selection
+    plot_key = f'scatter_plot_{st.session_state.plot_version}'
+    
     # Display molecule card when point is clicked
-    if 'scatter_plot' in st.session_state and st.session_state.scatter_plot:
-        selection = st.session_state.scatter_plot.get('selection')
+    if plot_key in st.session_state and st.session_state[plot_key]:
+        selection = st.session_state[plot_key].get('selection')
         if selection and 'points' in selection and len(selection['points']) > 0:
             
-            # Get the first selected point
-            point_info = selection['points'][0]
+            num_selected = len(selection['points'])
             
-            # Extract the eMolecules SKU from customdata (first element)
+            # Initialize the current index in session state
+            if 'compound_index' not in st.session_state:
+                st.session_state.compound_index = 0
+            
+            # Reset index if it's out of bounds (happens when switching selections)
+            if st.session_state.compound_index >= num_selected:
+                st.session_state.compound_index = 0
+            
+            # Navigation controls for multiple selections
+            if num_selected > 1:
+                st.subheader(f'Selected Compounds ({num_selected})')
+                
+                col_nav1, col_nav2, col_nav3 = st.columns([1, 2, 1])
+                
+                with col_nav1:
+                    if st.button('← Prev', use_container_width=True):
+                        st.session_state.compound_index = (st.session_state.compound_index - 1) % num_selected
+                        st.rerun()
+                
+                with col_nav2:
+                    st.markdown(f"<h4 style='text-align: center;'>Compound {st.session_state.compound_index + 1} of {num_selected}</h4>", unsafe_allow_html=True)
+                
+                with col_nav3:
+                    if st.button('Next →', use_container_width=True):
+                        st.session_state.compound_index = (st.session_state.compound_index + 1) % num_selected
+                        st.rerun()
+                
+                st.markdown('---')
+            else:
+                st.subheader('Selected Compound')
+            
+            # Get the current compound to display
+            point_info = selection['points'][st.session_state.compound_index]
             emolecules_sku = point_info['customdata'][0]
-            
-            # Find the matching row in the dataframe
             selected_row = df[df['eMolecules SKU'] == emolecules_sku].iloc[0]
-            
-            st.subheader('Selected Compound')
             
             # Chemical structure
             st.markdown('**Chemical Structure**')
@@ -145,14 +195,15 @@ with col_details:
                 st.error('Unable to render molecule structure')
             
             st.markdown('---')
-            
             # Compound details
             st.markdown('**Compound Details**')
             
             details = {
                 'eMolecules SKU': selected_row['eMolecules SKU'],
+                'eMolecules ID': selected_row['eMolecules ID'],
                 'SMILES': selected_row['SMILES'],
                 'CAS': selected_row.get('CAS', 'N/A'),
+                'Cluster': selected_row['cluster'],
                 'Price': f"${selected_row['Price']:.2f}" if pd.notna(selected_row['Price']) else 'N/A',
                 'Packsize': selected_row['Packsize'],
                 'Tier': selected_row.get('Tier', 'N/A'),
@@ -162,9 +213,15 @@ with col_details:
             
             for key, value in details.items():
                 st.text(f"{key}: {value}")
+
         else:
-            # Placeholder when nothing is selected
+            # Reset index when nothing is selected
+            st.session_state.compound_index = 0
             st.info('👈 Click on a point in the plot to view compound details')
+    else:
+        # Show placeholder when nothing selected
+        st.session_state.compound_index = 0
+        st.info('👈 Click on a point in the plot to view compound details')
 
 st.divider()
 
@@ -180,7 +237,7 @@ with st.expander('Catalog Details'):
         'Packsize',
         'Supplier Name',
         'Supplier Catalog Number'
-    ]].head(100), use_container_width=True)
+    ]].head(100), width='stretch')
 
 # show cluster stats
 st.subheader('Cluster details')
@@ -190,4 +247,4 @@ cluster_df = pd.DataFrame({
     'Count': cluster_counts.values,
     'Percentage': (cluster_counts.values/len(df)*100).round(1)
 })
-st.dataframe(cluster_df, hide_index=True, use_container_width=True)
+st.dataframe(cluster_df, hide_index=True, width='stretch')
