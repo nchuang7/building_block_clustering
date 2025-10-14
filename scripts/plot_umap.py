@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 import re
+import os
 from plotly.colors import qualitative as q
 from streamlit_plotly_events import plotly_events
 from rdkit import Chem
@@ -53,8 +54,11 @@ if 'last_selection_skus' not in st.session_state:
     st.session_state.last_selection_skus = []
 
 # load data
-acids_df = pd.read_parquet('/Users/nataliechuang/Documents/Personal Projects/Satomic/building_block_clustering/data/sampled_acids.parquet')
-amines_df = pd.read_parquet('/Users/nataliechuang/Documents/Personal Projects/Satomic/building_block_clustering/data/sampled_amines.parquet')
+ROOT = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(ROOT, '..', 'data')
+
+acids_df = pd.read_parquet(os.path.join(DATA_DIR, 'sampled_acids.parquet'))
+amines_df = pd.read_parquet(os.path.join(DATA_DIR, 'sampled_amines.parquet'))
 
 ##### SIDEBAR #####
 
