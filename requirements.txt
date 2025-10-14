@@ -1,6 +1,11 @@
+# numpy < 2 for rdkit-pypi
 numpy==1.26.4
-rdkit-pypi
-pandas
-plotly
-streamlit
-pyarrow
+
+# RDKit wheels available for Linux, Py3.11
+rdkit-pypi==2022.9.5
+
+streamlit>=1.34
+Streamlit-plotly-events==0.0.6
+plotly>=5.18
+pandas>=2.1
+pyarrow>=14
