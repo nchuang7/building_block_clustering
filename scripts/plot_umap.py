@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import re
 from plotly.colors import qualitative as q
 from streamlit_plotly_events import plotly_events
@@ -43,6 +44,12 @@ if 'manual_indices' not in st.session_state:
 
 if 'compound_index' not in st.session_state:
     st.session_state.compound_index = 0
+
+if 'highlight_skus' not in st.session_state:
+    st.session_state.highlight_skus = []
+
+if 'last_selection_skus' not in st.session_state:
+    st.session_state.last_selection_skus = []
 
 # load data
 acids_df = pd.read_parquet('/Users/nataliechuang/Documents/Personal Projects/Satomic/building_block_clustering/data/sampled_acids.parquet')
@@ -168,9 +175,6 @@ if st.sidebar.button('🎯 Add IDs', width='stretch', key='add_ids'):
                 # Update combined sampled_indices
                 st.session_state.sampled_indices = list(set(st.session_state.stratified_indices + st.session_state.manual_indices))
 
-                ##### DEBUG
-                st.write(f"Sampled indices after manual sampling - {len(st.session_state.sampled_indices)}")
-                
                 not_found = set(manual_ids) - set(matching_indices)
                 if not_found:
                     st.sidebar.warning(f'Found {len(matching_indices)} IDs. Could not find: {len(not_found)} IDs')
@@ -235,162 +239,175 @@ df['Price_usd'] = df['Price'].apply(lambda x: f'${x:.2f}')
 # set color palette
 palette = q.Plotly
 
-# create UMAP plot
-fig = px.scatter(
-    df,
-    x='UMAP1',
-    y='UMAP2',
-    color='cluster',
-    hover_data={
-        'UMAP1': False,
-        'UMAP2': False,
-        'eMolecules SKU': True,
-        'SMILES': True,
-    },
-    title=f'UMAP projection for {bb_type} building blocks',
-    color_discrete_sequence=palette,
-    height=600
-)
+# define initial plot key
+plot_key = f'scatter_plot_{st.session_state.plot_version}'
 
-# update style and markers
-fig.update_traces(
-    marker=dict(
-        size=10,
-        line=dict(width=1, color='white')
-    ),
-)
+# handle selection first (available from the *previous* render)
+selection = None
+if plot_key in st.session_state and st.session_state[plot_key]:
+    selection = st.session_state[plot_key].get('selection')
 
-# update layout
-fig.update_layout(
-    plot_bgcolor='white',
-    paper_bgcolor='white',
-    font=dict(size=12),
-    xaxis=dict(showgrid=True, gridwidth=1, gridcolor='lightgray'),
-    yaxis=dict(showgrid=True, gridwidth=1, gridcolor='lightgray')
-)
+    # If we have a NEW selection from the plot, update highlight_skus
+    if selection and 'points' in selection and len(selection['points']) > 0:
+        selected_skus = [pt['customdata'][0] for pt in selection['points']]
+        st.session_state.highlight_skus = selected_skus
+        # Reset compound index when NEW selection is made
+        if st.session_state.get('last_selection_skus') != selected_skus:
+            st.session_state.compound_index = 0
+            st.session_state.last_selection_skus = selected_skus
 
-# Add highlighted layer for sampled points if any exist
+# update highlight_skus + compound_index + current selected row
+current_row = None
+
+if st.session_state.highlight_skus:
+    num_selected = len(st.session_state.highlight_skus)
+    if st.session_state.compound_index >= num_selected:
+        st.session_state.compound_index = 0
+
+    # get active SKU for the detail panel
+    active_sku = st.session_state.highlight_skus[st.session_state.compound_index]
+    if active_sku in df['eMolecules SKU'].values:
+        current_row = df[df['eMolecules SKU'] == active_sku].iloc[0]
+else:
+    # no selection -> clear point halo
+    st.session_state.compound_index = 0
+
+# Create base scatter without px.scatter automatic clustering
+fig = go.Figure()
+
+# Manually add each cluster as a trace - use Scattergl for performance
+for cluster in sorted(df['cluster'].unique()):
+    cluster_df = df[df['cluster'] == cluster]
+    fig.add_trace(go.Scattergl(
+        x=cluster_df['UMAP1'],
+        y=cluster_df['UMAP2'],
+        mode='markers',
+        name=str(cluster),
+        marker=dict(
+            size=10,
+            color=palette[int(cluster) % len(palette)],
+            line=dict(width=1, color='white')
+        ),
+        customdata=cluster_df[['eMolecules SKU', 'SMILES']].values,
+        hovertemplate='<br>'.join([
+            'eMolecules SKU=%{customdata[0]}',
+            'SMILES=%{customdata[1]}',
+            '<extra></extra>'
+        ])
+    ))
+
+# add sampled points as last trace
 if st.session_state.sampled_indices:
-    # filter to only indices that exist in current df
     valid_indices = [idx for idx in st.session_state.sampled_indices if idx in df.index]
-
     if valid_indices:
         sampled_df = df.loc[valid_indices]
-
-        # Add sampled points as a separate trace with highlighting
-        fig.add_scatter(
+        fig.add_trace(go.Scattergl(
             x=sampled_df['UMAP1'],
             y=sampled_df['UMAP2'],
             mode='markers',
-            marker=dict(
-                size=15,
-                color='DarkSlateGrey',
-            ),
             name='Sampled',
-            showlegend=True,
-            hoverinfo='skip'  # Don't show hover for this layer
-        )
+            marker=dict(
+                size=14,
+                color='black',
+            ),
+            hoverinfo='skip'
+        ))
 
-        #### z order #####
+# update layout
+fig.update_layout(
+    title=f'UMAP projection for {bb_type} building blocks',
+    plot_bgcolor='white',
+    paper_bgcolor='white',
+    font=dict(size=12),
+    xaxis=dict(showgrid=True, gridwidth=1, gridcolor='lightgray', title='UMAP1'),
+    yaxis=dict(showgrid=True, gridwidth=1, gridcolor='lightgray', title='UMAP2'),
+    height=600
+)
+
+# highlight selected points on plot
+if st.session_state.highlight_skus:
+    hi_df = df[df['eMolecules SKU'].isin(st.session_state.highlight_skus)]
+    if not hi_df.empty:
+        fig.add_trace(go.Scattergl(
+            x=hi_df['UMAP1'],
+            y=hi_df['UMAP2'],
+            mode='markers',
+            name='Selected',
+            hoverinfo='skip',
+            marker=dict(
+                size=20,
+                color='rgba(0,0,0,0)',
+                line=dict(width=3, color='black')
+            ),
+            showlegend=False
+        ))
 
 # Create two columns for plot and details panel
 col_plot, col_details = st.columns([2, 1])
 
 with col_plot:
-    # display plot with a dynamic key to force refresh when needed
+    st.markdown('### UMAP plot · Click point to view building block details')
     selected = st.plotly_chart(
-        fig, 
-        use_container_width=True, 
-        key=f'scatter_plot_{st.session_state.plot_version}',  # Dynamic key
+        fig,
+        use_container_width=True,
+        key=plot_key,
         on_select='rerun'
     )
 
-    # Add reset button above the plot
+    # Add reset button
     if st.button('🔄  Reset Plot Selection'):
-        # Increment plot version to force a fresh render with all traces visible
         st.session_state.plot_version += 1
         st.session_state.compound_index = 0
-        st.rerun()    
+        st.session_state.highlight_skus = []
+        st.session_state.last_selection_skus = []
+        st.rerun()     
 
+# add building block structure and details
 with col_details:
-    # Use the dynamic key to access the selection
-    plot_key = f'scatter_plot_{st.session_state.plot_version}'
-    
-    # Display molecule card when point is clicked
-    if plot_key in st.session_state and st.session_state[plot_key]:
-        selection = st.session_state[plot_key].get('selection')
-        if selection and 'points' in selection and len(selection['points']) > 0:
-            
-            num_selected = len(selection['points'])
-            
-            # Reset index if it's out of bounds (happens when switching selections)
-            if st.session_state.compound_index >= num_selected:
-                st.session_state.compound_index = 0
-            
-            # Navigation controls for multiple selections
-            if num_selected > 1:
-                st.subheader(f'Selected Compounds ({num_selected})')
-                
-                col_nav1, col_nav2, col_nav3 = st.columns([1, 2, 1])
-                
-                with col_nav1:
-                    if st.button('← Prev', use_container_width=True):
-                        st.session_state.compound_index = (st.session_state.compound_index - 1) % num_selected
-                        st.rerun()
-                
-                with col_nav2:
-                    st.markdown(f"<h4 style='text-align: center;'>Compound {st.session_state.compound_index + 1} of {num_selected}</h4>", unsafe_allow_html=True)
-                
-                with col_nav3:
-                    if st.button('Next →', use_container_width=True):
-                        st.session_state.compound_index = (st.session_state.compound_index + 1) % num_selected
-                        st.rerun()
-                
-                st.markdown('---')
-            else:
-                st.subheader('Selected Compound')
-            
-            # Get the current compound to display
-            point_info = selection['points'][st.session_state.compound_index]
-            emolecules_sku = point_info['customdata'][0]
-            selected_row = df[df['eMolecules SKU'] == emolecules_sku].iloc[0]
-            
-            # Chemical structure
-            st.markdown('**Structure**')
-            smiles = selected_row['SMILES']
-            svg = render_molecule(smiles)
-            
-            if svg:
-                st.image(svg, use_container_width=True)
-            else:
-                st.error('Unable to render molecule structure')
-            
-            st.markdown('---')
-            # Compound details
-            st.markdown('**Details**')
-            
-            details = {
-                'eMolecules SKU': selected_row['eMolecules SKU'],
-                'SMILES': selected_row['SMILES'],
-                'CAS': selected_row.get('CAS', 'N/A'),
-                'Cluster': selected_row['cluster'],
-                'Price': f"${selected_row['Price']:.2f}" if pd.notna(selected_row['Price']) else 'N/A',
-                'Packsize': selected_row['Packsize'],
-                'Tier': selected_row.get('Tier', 'N/A'),
-                'Supplier Name': selected_row.get('Supplier Name', 'N/A'),
-                'Supplier Catalog Number': selected_row.get('Supplier Catalog Number', 'N/A')
-            }
-            
-            for key, value in details.items():
-                st.text(f"{key}: {value}")
+    if current_row is not None:
+        selected_count = len(st.session_state.highlight_skus)
+        if selected_count > 1:
+            col_nav1, col_nav2, col_nav3 = st.columns([1,2,1])
+            with col_nav1:
+                if st.button('← Prev', use_container_width=True):
+                    st.session_state.compound_index = (st.session_state.compound_index - 1) % selected_count
+                    st.rerun()
+            with col_nav2:
+                st.markdown(
+                    f"<h4 style='text-align: center;'>Compound {st.session_state.compound_index + 1} of {selected_count}</h4>",
+                    unsafe_allow_html=True
+                )
+            with col_nav3:
+                if st.button('Next →', use_container_width=True):
+                    st.session_state.compound_index = (st.session_state.compound_index + 1) % selected_count
+                    st.rerun()
 
+        st.markdown('**Structure**')
+        smiles = current_row['SMILES']
+        svg = render_molecule(smiles)
+        if svg:
+            # st.image can display SVG bytes, but st.markdown preserves vector sharpness
+            #st.markdown(svg, unsafe_allow_html=True)
+            st.image(svg)
         else:
-            # Reset index when nothing is selected
-            st.session_state.compound_index = 0
-            st.info('👈 Click on a point in the plot to view compound details')
+            st.error('Unable to render molecule structure')
+
+        st.markdown('---')
+        st.markdown('**Details**')
+        details = {
+            'eMolecules SKU': current_row['eMolecules SKU'],
+            'SMILES': current_row['SMILES'],
+            'CAS': current_row.get('CAS', 'N/A'),
+            'Cluster': current_row['cluster'],
+            'Price': f"${current_row['Price']:.2f}" if pd.notna(current_row['Price']) else 'N/A',
+            'Packsize': current_row.get('Packsize', 'N/A'),
+            'Tier': current_row.get('Tier', 'N/A'),
+            'Supplier Name': current_row.get('Supplier Name', 'N/A'),
+            'Supplier Catalog Number': current_row.get('Supplier Catalog Number', 'N/A')
+        }
+        for k, v in details.items():
+            st.text(f"{k}: {v}")
     else:
-        # Show placeholder when nothing selected
-        st.session_state.compound_index = 0
         st.info('👈 Click on a point in the plot to view compound details')
 
 st.divider()
