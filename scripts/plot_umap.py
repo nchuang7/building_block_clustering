@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
 import plotly.graph_objects as go
 import re
 from plotly.colors import qualitative as q
@@ -8,6 +7,8 @@ from streamlit_plotly_events import plotly_events
 from rdkit import Chem
 from rdkit.Chem import AllChem
 from rdkit.Chem.Draw import rdMolDraw2D
+
+##### CONFIGURATION #####
 
 # helper function to render chemical structure
 def render_molecule(smiles):
@@ -55,6 +56,8 @@ if 'last_selection_skus' not in st.session_state:
 acids_df = pd.read_parquet('/Users/nataliechuang/Documents/Personal Projects/Satomic/building_block_clustering/data/sampled_acids.parquet')
 amines_df = pd.read_parquet('/Users/nataliechuang/Documents/Personal Projects/Satomic/building_block_clustering/data/sampled_amines.parquet')
 
+##### SIDEBAR #####
+
 # add sidebar
 st.sidebar.header('Settings')
 
@@ -73,18 +76,22 @@ elif st.session_state.previous_bb_type != bb_type:
     st.session_state.manual_indices = []
     st.session_state.previous_bb_type = bb_type
 
-# select appropriate bb df from toggle
+# toggle appropriate bb
 if bb_type == 'Amines':
     df = amines_df.set_index('eMolecules ID')
 else:
     df = acids_df.set_index('eMolecules ID')
 
-st.session_state.sampled_indices = list(set(st.session_state.stratified_indices + st.session_state.manual_indices))
-
 # add sampling inputs and controls
 st.sidebar.markdown('---')
 st.sidebar.subheader('Building Block Sampler')
 
+# update sampled indices
+st.session_state.sampled_indices = list(set(st.session_state.stratified_indices + st.session_state.manual_indices))
+
+## STRATIFIED SAMPLING ##
+
+# sample size input
 st.sidebar.markdown('**Stratified Sampling**')
 sample_size = st.sidebar.number_input(
     'Select sample size:',
@@ -95,7 +102,7 @@ sample_size = st.sidebar.number_input(
     key='sample_size_input'
 )
 
-# stratified sampler
+# add sample button
 if st.sidebar.button('📊 Add Sample', width='stretch', key='add_sample'):
     # get cluster proportions
     cluster_counts = df['cluster'].value_counts()
@@ -133,6 +140,7 @@ if st.sidebar.button('📊 Add Sample', width='stretch', key='add_sample'):
     st.session_state.sampled_indices = list(set(st.session_state.stratified_indices + st.session_state.manual_indices))
     st.rerun()
 
+# clear sample button
 if st.sidebar.button('Clear Sample', width='stretch', key='clear_sample'):
     # clear only stratified samples
     st.session_state.stratified_indices = []
@@ -141,11 +149,13 @@ if st.sidebar.button('Clear Sample', width='stretch', key='clear_sample'):
     st.session_state.sampled_indices = list(set(st.session_state.manual_indices))
     st.rerun()
 
-# manually add inputs to sampled compounds
 st.sidebar.markdown('---')
-st.sidebar.markdown('**Manual Input**')
 
-st.sidebar.caption('Enter eMolecules IDs (comma, space, or newline separated):')
+## MANUAL SAMPLING ##
+
+# manual sample input box
+st.sidebar.markdown('**Manual ID Input**')
+st.sidebar.caption('Enter eMolecules IDs to *add to* sample list (comma, space, or newline separated):')
 id_input = st.sidebar.text_area(
     'eMolecules IDs:',
     height=120,
@@ -154,6 +164,7 @@ id_input = st.sidebar.text_area(
     key='id_input'
 )
 
+# add ID button
 if st.sidebar.button('🎯 Add IDs', width='stretch', key='add_ids'):
     if id_input.strip():
         # parse input to handle comma, space, or newline separated
@@ -186,7 +197,7 @@ if st.sidebar.button('🎯 Add IDs', width='stretch', key='add_ids'):
     else:
        st.sidebar.warning('Please enter at least one eMolecules ID')
 
-
+# clear ID button
 if st.sidebar.button('Clear IDs', width='stretch', key='clear_ids'):
     # clear only manual IDs
     st.session_state.manual_indices = []
@@ -196,18 +207,67 @@ if st.sidebar.button('Clear IDs', width='stretch', key='clear_ids'):
     st.rerun()
 
 st.sidebar.markdown('---')
+
+## MANUAL SAMPLE REMOVAL ##
+
+# manual sample removal input box
+st.sidebar.markdown('**Manual ID Removal**')
+st.sidebar.caption('Enter eMolecules IDs to *remove from* sample list (comma, space, or newline separated):')
+remove_input = st.sidebar.text_area(
+    'IDs to remove:',
+    height=100,
+    placeholder='e.g. 12345, 67890',
+    label_visibility='collapsed',
+    key='remove_input'
+)
+
+# remove ID button
+if st.sidebar.button('❌ Remove IDs', width='stretch', key='remove_ids'):
+    if remove_input.strip():
+        # Parse input
+        id_strings = re.split(r'[,\s\n]+', remove_input.strip())
+        
+        try:
+            # Convert to integers
+            ids_to_remove = [int(id_str.strip()) for id_str in id_strings if id_str.strip()]
+            
+            # Remove from both stratified and manual lists
+            st.session_state.stratified_indices = [idx for idx in st.session_state.stratified_indices if idx not in ids_to_remove]
+            st.session_state.manual_indices = [idx for idx in st.session_state.manual_indices if idx not in ids_to_remove]
+            
+            # Update combined sampled_indices
+            st.session_state.sampled_indices = list(set(st.session_state.stratified_indices + st.session_state.manual_indices))
+            
+            # Show feedback
+            removed_count = len([idx for idx in ids_to_remove if idx not in st.session_state.sampled_indices])
+            if removed_count > 0:
+                st.sidebar.success(f'Removed {removed_count} IDs')
+            else:
+                st.sidebar.warning('None of the specified IDs were in the sample')
+            
+            st.rerun()
+        except ValueError:
+            st.sidebar.error('Invalid input. Please enter valid numeric IDs.')
+    else:
+        st.sidebar.warning('Please enter at least one eMolecules ID to remove')
+
+st.sidebar.markdown('---')
+
+# clear all sample button
 if st.sidebar.button('🗑️ Clear All Samples', width='stretch', type='primary'):
     st.session_state.sampled_indices = []
     st.session_state.stratified_indices = []
     st.session_state.manual_indices = []
     st.rerun()
 
-# Show highlighting info with breakdown
+# Show sampling info
 if 'sampled_indices' in st.session_state and st.session_state.sampled_indices:
     valid_indices = [idx for idx in st.session_state.sampled_indices if idx in df.index]
-    st.sidebar.success(f'✓ {len(valid_indices)} points highlighted')
+    st.sidebar.success(f'✓ {len(valid_indices)} points sampled')
 
-# display summary
+##### SUMMARY INFO #####
+
+# display dataset summary
 st.subheader('Dataset summary')
 col1, col2, col3 = st.columns(3)
 with col1:
@@ -230,11 +290,17 @@ st.dataframe(cluster_df, hide_index=True, width='content')
 
 st.divider()
 
+# dataframe formatting
+
 # convert cluster to categorical type
 df['cluster'] = df['cluster'].astype(str)
 
 # format price column
 df['Price_usd'] = df['Price'].apply(lambda x: f'${x:.2f}')
+
+##### PLOTTING #####
+
+## PLOT CONFIGURATION ##
 
 # set color palette
 palette = q.Plotly
@@ -272,10 +338,12 @@ else:
     # no selection -> clear point halo
     st.session_state.compound_index = 0
 
-# Create base scatter without px.scatter automatic clustering
+## FIGURE DEFINITION AND FORMATTING ##
+
+# create figure for scatter plot
 fig = go.Figure()
 
-# Manually add each cluster as a trace - use Scattergl for performance
+# manually add each cluster as a trace - use Scattergl for performance
 for cluster in sorted(df['cluster'].unique()):
     cluster_df = df[df['cluster'] == cluster]
     fig.add_trace(go.Scattergl(
@@ -310,12 +378,12 @@ if st.session_state.sampled_indices:
                 size=14,
                 color='black',
             ),
+            customdata=sampled_df[['eMolecules SKU', 'SMILES']].values,
             hoverinfo='skip'
         ))
 
 # update layout
 fig.update_layout(
-    title=f'UMAP projection for {bb_type} building blocks',
     plot_bgcolor='white',
     paper_bgcolor='white',
     font=dict(size=12),
@@ -326,11 +394,11 @@ fig.update_layout(
 
 # highlight selected points on plot
 if st.session_state.highlight_skus:
-    hi_df = df[df['eMolecules SKU'].isin(st.session_state.highlight_skus)]
-    if not hi_df.empty:
+    highlight_df = df[df['eMolecules SKU'].isin(st.session_state.highlight_skus)]
+    if not highlight_df.empty:
         fig.add_trace(go.Scattergl(
-            x=hi_df['UMAP1'],
-            y=hi_df['UMAP2'],
+            x=highlight_df['UMAP1'],
+            y=highlight_df['UMAP2'],
             mode='markers',
             name='Selected',
             hoverinfo='skip',
@@ -339,14 +407,18 @@ if st.session_state.highlight_skus:
                 color='rgba(0,0,0,0)',
                 line=dict(width=3, color='black')
             ),
+            customdata=highlight_df[['eMolecules SKU', 'SMILES']].values,
             showlegend=False
         ))
 
-# Create two columns for plot and details panel
+## PLOT DISPLAY AND DETAIL PANEL ##
+
+# create two columns for plot and details panel
 col_plot, col_details = st.columns([2, 1])
 
+# display plot
 with col_plot:
-    st.markdown('### UMAP plot · Click point to view building block details')
+    st.markdown(f'### UMAP projection for {bb_type} building blocks')
     selected = st.plotly_chart(
         fig,
         use_container_width=True,
@@ -354,7 +426,7 @@ with col_plot:
         on_select='rerun'
     )
 
-    # Add reset button
+    # add reset button
     if st.button('🔄  Reset Plot Selection'):
         st.session_state.plot_version += 1
         st.session_state.compound_index = 0
@@ -382,16 +454,16 @@ with col_details:
                     st.session_state.compound_index = (st.session_state.compound_index + 1) % selected_count
                     st.rerun()
 
+        # structure display
         st.markdown('**Structure**')
         smiles = current_row['SMILES']
         svg = render_molecule(smiles)
         if svg:
-            # st.image can display SVG bytes, but st.markdown preserves vector sharpness
-            #st.markdown(svg, unsafe_allow_html=True)
             st.image(svg)
         else:
             st.error('Unable to render molecule structure')
 
+        # detail display
         st.markdown('---')
         st.markdown('**Details**')
         details = {
@@ -412,7 +484,8 @@ with col_details:
 
 st.divider()
 
-# Show sampled compounds details
+##### SAMPLE DETAIL TABLE #####
+
 if st.session_state.sampled_indices:
     # filter to valid indices that exist in current dataframe
     valid_sampled_indices = [idx for idx in st.session_state.sampled_indices if idx in df.index]
@@ -421,22 +494,22 @@ if st.session_state.sampled_indices:
         sampled_display_df = df.loc[valid_sampled_indices]
         sampled_display_df = sampled_display_df.rename(columns={'Price': 'Price (USD$)', 'cluster': 'Cluster'})
 
-        with st.expander(f'Sampled Building Block Details ({len(valid_sampled_indices)})'):
-            st.dataframe(sampled_display_df[[
-                'eMolecules SKU',
-                'SMILES',
-                'Price (USD$)',
-                'Packsize',
-                'Supplier Name',
-                'Tier',
-                'Cluster'
-            ]], width='stretch')
+        st.subheader(f'Sampled Building Block Details ({len(valid_sampled_indices)})')
+        st.dataframe(sampled_display_df[[
+            'eMolecules SKU',
+            'SMILES',
+            'Price (USD$)',
+            'Packsize',
+            'Supplier Name',
+            'Tier',
+            'Cluster'
+        ]], width='stretch')
         
-    # Add download button for sampled data
-    csv = sampled_display_df.to_csv()
-    st.download_button(
-        label="📥 Download Sampled Data as CSV",
-        data=csv,
-        file_name=f'sampled_{bb_type.lower()}_{len(valid_sampled_indices)}_building_blocks.csv',
-        mime='text/csv',
-    )
+        # Add download button for sampled data
+        csv = sampled_display_df.to_csv()
+        st.download_button(
+            label="📥 Download Sampled Data as CSV",
+            data=csv,
+            file_name=f'sampled_{bb_type.lower()}_{len(valid_sampled_indices)}_building_blocks.csv',
+            mime='text/csv',
+        )
