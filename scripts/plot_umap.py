@@ -344,7 +344,7 @@ else:
 fig = go.Figure()
 
 # manually add each cluster as a trace - use Scattergl for performance
-for cluster in sorted(df['cluster'].unique()):
+for cluster in sorted(df['cluster'].unique(), key=int):
     cluster_df = df[df['cluster'] == cluster]
     fig.add_trace(go.Scattergl(
         x=cluster_df['UMAP1'],
