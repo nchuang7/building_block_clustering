@@ -47,11 +47,11 @@ if 'manual_indices' not in st.session_state:
 if 'compound_index' not in st.session_state:
     st.session_state.compound_index = 0
 
-if 'highlight_skus' not in st.session_state:
-    st.session_state.highlight_skus = []
+if 'highlight_ids' not in st.session_state:
+    st.session_state.highlight_ids = []
 
-if 'last_selection_skus' not in st.session_state:
-    st.session_state.last_selection_skus = []
+if 'last_selection_ids' not in st.session_state:
+    st.session_state.last_selection_ids = []
 
 # load data
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -82,9 +82,9 @@ elif st.session_state.previous_bb_type != bb_type:
 
 # toggle appropriate bb
 if bb_type == 'Amines':
-    df = amines_df.set_index('eMolecules ID')
+    df = amines_df
 else:
-    df = acids_df.set_index('eMolecules ID')
+    df = acids_df
 
 # add sampling inputs and controls
 st.sidebar.markdown('---')
@@ -137,7 +137,7 @@ if st.sidebar.button('📊 Add Sample', width='stretch', key='add_sample'):
 
     # combine with any existing stratified samples
     existing_stratified = set(st.session_state.stratified_indices)
-    new_indices = set(combined_samples.index.tolist())
+    new_indices = set(combined_samples['eMolecules ID'].tolist())
     st.session_state.stratified_indices = list(existing_stratified.union(new_indices))
 
     # update combined sample indices
@@ -179,7 +179,7 @@ if st.sidebar.button('🎯 Add IDs', width='stretch', key='add_ids'):
             manual_ids = [int(id_str.strip()) for id_str in id_strings if id_str.strip()]
                 
             # Find matching indices in dataframe
-            matching_indices = df[df.index.isin(manual_ids)].index.tolist()
+            matching_indices = df.loc[df['eMolecules ID'].isin(manual_ids), 'eMolecules ID'].tolist()
                 
             if matching_indices:
                 # Add to manual indices (using set to avoid duplicates)
@@ -266,7 +266,7 @@ if st.sidebar.button('🗑️ Clear All Samples', width='stretch', type='primary
 
 # Show sampling info
 if 'sampled_indices' in st.session_state and st.session_state.sampled_indices:
-    valid_indices = [idx for idx in st.session_state.sampled_indices if idx in df.index]
+    valid_indices = [idx for idx in st.session_state.sampled_indices if idx in df['eMolecules ID'].values]
     st.sidebar.success(f'✓ {len(valid_indices)} points sampled')
 
 ##### SUMMARY INFO #####
@@ -317,27 +317,27 @@ selection = None
 if plot_key in st.session_state and st.session_state[plot_key]:
     selection = st.session_state[plot_key].get('selection')
 
-    # If we have a NEW selection from the plot, update highlight_skus
+    # If we have a NEW selection from the plot, update highlight_ids
     if selection and 'points' in selection and len(selection['points']) > 0:
-        selected_skus = [pt['customdata'][0] for pt in selection['points']]
-        st.session_state.highlight_skus = selected_skus
+        selected_ids = [pt['customdata'][0] for pt in selection['points']]
+        st.session_state.highlight_ids = selected_ids
         # Reset compound index when NEW selection is made
-        if st.session_state.get('last_selection_skus') != selected_skus:
+        if st.session_state.get('last_selection_ids') != selected_ids:
             st.session_state.compound_index = 0
-            st.session_state.last_selection_skus = selected_skus
+            st.session_state.last_selection_ids = selected_ids
 
-# update highlight_skus + compound_index + current selected row
+# update highlight_ids + compound_index + current selected row
 current_row = None
 
-if st.session_state.highlight_skus:
-    num_selected = len(st.session_state.highlight_skus)
+if st.session_state.highlight_ids:
+    num_selected = len(st.session_state.highlight_ids)
     if st.session_state.compound_index >= num_selected:
         st.session_state.compound_index = 0
 
-    # get active SKU for the detail panel
-    active_sku = st.session_state.highlight_skus[st.session_state.compound_index]
-    if active_sku in df['eMolecules SKU'].values:
-        current_row = df[df['eMolecules SKU'] == active_sku].iloc[0]
+    # get active ID for the detail panel
+    active_id = st.session_state.highlight_ids[st.session_state.compound_index]
+    if active_id in df['eMolecules ID'].values:
+        current_row = df[df['eMolecules ID'] == active_id].iloc[0]
 else:
     # no selection -> clear point halo
     st.session_state.compound_index = 0
@@ -348,8 +348,13 @@ else:
 fig = go.Figure()
 
 # manually add each cluster as a trace - use Scattergl for performance
-for cluster in sorted(df['cluster'].unique(), key=int):
-    cluster_df = df[df['cluster'] == cluster]
+unique_clusters = sorted(df['cluster'].astype(str).unique(), key=int)
+for i, cluster in enumerate(unique_clusters):
+    cluster_df = df[df['cluster'].astype(str) == cluster]
+
+    # define custom data (eMolecule ID, SMILES)
+    cd = list(zip(cluster_df['eMolecules ID'].tolist(), cluster_df['SMILES'].tolist()))
+
     fig.add_trace(go.Scattergl(
         x=cluster_df['UMAP1'],
         y=cluster_df['UMAP2'],
@@ -357,12 +362,12 @@ for cluster in sorted(df['cluster'].unique(), key=int):
         name=str(cluster),
         marker=dict(
             size=10,
-            color=palette[int(cluster) % len(palette)],
+            color=palette[i % len(palette)],
             line=dict(width=1, color='white')
         ),
-        customdata=cluster_df[['eMolecules SKU', 'SMILES']].values,
+        customdata=cd,
         hovertemplate='<br>'.join([
-            'eMolecules SKU=%{customdata[0]}',
+            'eMolecules ID=%{customdata[0]}',
             'SMILES=%{customdata[1]}',
             '<extra></extra>'
         ])
@@ -370,9 +375,10 @@ for cluster in sorted(df['cluster'].unique(), key=int):
 
 # add sampled points as last trace
 if st.session_state.sampled_indices:
-    valid_indices = [idx for idx in st.session_state.sampled_indices if idx in df.index]
+    valid_indices = [idx for idx in st.session_state.sampled_indices if idx in df['eMolecules ID'].values]
     if valid_indices:
-        sampled_df = df.loc[valid_indices]
+        sampled_df = df[df['eMolecules ID'].isin(valid_indices)]
+        #sampled_df = df.loc[valid_indices]
         fig.add_trace(go.Scattergl(
             x=sampled_df['UMAP1'],
             y=sampled_df['UMAP2'],
@@ -382,7 +388,7 @@ if st.session_state.sampled_indices:
                 size=14,
                 color='black',
             ),
-            customdata=sampled_df[['eMolecules SKU', 'SMILES']].values,
+            customdata=sampled_df[['eMolecules ID','SMILES']].values,
             hoverinfo='skip'
         ))
 
@@ -393,12 +399,21 @@ fig.update_layout(
     font=dict(size=12),
     xaxis=dict(showgrid=True, gridwidth=1, gridcolor='lightgray', title='UMAP1'),
     yaxis=dict(showgrid=True, gridwidth=1, gridcolor='lightgray', title='UMAP2'),
-    height=600
+    height=600,
+
+            # --- Legend styling ---
+    legend=dict(
+        title_text='Cluster',
+        title_font=dict(size=20, color='black'),
+        font=dict(size=22, color='black'),
+        itemsizing='constant',        # keeps marker size consistent
+    )
 )
 
 # highlight selected points on plot
-if st.session_state.highlight_skus:
-    highlight_df = df[df['eMolecules SKU'].isin(st.session_state.highlight_skus)]
+if st.session_state.highlight_ids:
+    highlight_df = df[df['eMolecules ID'].isin(st.session_state.highlight_ids)]
+
     if not highlight_df.empty:
         fig.add_trace(go.Scattergl(
             x=highlight_df['UMAP1'],
@@ -411,7 +426,7 @@ if st.session_state.highlight_skus:
                 color='rgba(0,0,0,0)',
                 line=dict(width=3, color='black')
             ),
-            customdata=highlight_df[['eMolecules SKU', 'SMILES']].values,
+            customdata=highlight_df[['eMolecules ID', 'SMILES']].values,
             showlegend=False
         ))
 
@@ -434,14 +449,14 @@ with col_plot:
     if st.button('🔄  Reset Plot Selection'):
         st.session_state.plot_version += 1
         st.session_state.compound_index = 0
-        st.session_state.highlight_skus = []
-        st.session_state.last_selection_skus = []
+        st.session_state.highlight_ids = []
+        st.session_state.last_selection_ids = []
         st.rerun()     
 
 # add building block structure and details
 with col_details:
     if current_row is not None:
-        selected_count = len(st.session_state.highlight_skus)
+        selected_count = len(st.session_state.highlight_ids)
         if selected_count > 1:
             col_nav1, col_nav2, col_nav3 = st.columns([1,2,1])
             with col_nav1:
@@ -471,7 +486,7 @@ with col_details:
         st.markdown('---')
         st.markdown('**Details**')
         details = {
-            'eMolecules SKU': current_row['eMolecules SKU'],
+            'eMolecules ID': current_row['eMolecules ID'],
             'SMILES': current_row['SMILES'],
             'CAS': current_row.get('CAS', 'N/A'),
             'Cluster': current_row['cluster'],
@@ -492,15 +507,17 @@ st.divider()
 
 if st.session_state.sampled_indices:
     # filter to valid indices that exist in current dataframe
-    valid_sampled_indices = [idx for idx in st.session_state.sampled_indices if idx in df.index]
+    valid_sampled_indices = [idx for idx in st.session_state.sampled_indices if idx in df['eMolecules ID'].values]
         
     if valid_sampled_indices:
-        sampled_display_df = df.loc[valid_sampled_indices]
+        sampled_display_df = df[df['eMolecules ID'].isin(valid_sampled_indices)]
+        #sampled_display_df = df.loc[valid_sampled_indices]
+        sampled_display_df = sampled_display_df.reset_index()
         sampled_display_df = sampled_display_df.rename(columns={'Price': 'Price (USD$)', 'cluster': 'Cluster'})
 
         st.subheader(f'Sampled Building Block Details ({len(valid_sampled_indices)})')
         st.dataframe(sampled_display_df[[
-            'eMolecules SKU',
+            'eMolecules ID',
             'SMILES',
             'Price (USD$)',
             'Packsize',
