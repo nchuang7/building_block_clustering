@@ -1,13 +1,16 @@
-import streamlit as st
-import pandas as pd
-import plotly.graph_objects as go
 import re
 import os
+import json
+from google.oauth2 import service_account
+import gcsfs
+import pandas as pd
+import streamlit as st
+import plotly.graph_objects as go
 from plotly.colors import qualitative as q
 from streamlit_plotly_events import plotly_events
 from rdkit import Chem
-from rdkit.Chem import AllChem
 from rdkit.Chem.Draw import rdMolDraw2D
+import config
 
 ##### CONFIGURATION #####
 
@@ -53,12 +56,38 @@ if 'highlight_ids' not in st.session_state:
 if 'last_selection_ids' not in st.session_state:
     st.session_state.last_selection_ids = []
 
-# load data
-ROOT = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(ROOT, '..', 'data')
+# load sample data
+#ROOT = os.path.dirname(os.path.abspath(__file__))
+#DATA_DIR = os.path.join(ROOT, '..', 'data')
 
-acids_df = pd.read_parquet(os.path.join(DATA_DIR, 'sampled_acids.parquet'))
-amines_df = pd.read_parquet(os.path.join(DATA_DIR, 'sampled_amines.parquet'))
+#acids_df = pd.read_parquet(os.path.join(DATA_DIR, 'sampled_acids.parquet'))
+#amines_df = pd.read_parquet(os.path.join(DATA_DIR, 'sampled_amines.parquet'))
+
+# load full data 
+@st.cache_resource
+def get_gcs_filesystem():
+    # check if running on Streamlit Cloud with secrets
+    if "gcp_service_account" in st.secrets:
+        credentials = service_account.Credentials.from_service_account_info(
+            st.secrets["gcp_service_account"]
+        )
+        return gcsfs.GCSFileSystem(token=credentials)
+    
+    # fallback: use local file path
+    else:
+        credentials = service_account.Credentials.from_service_account_file(
+            'service_account_key.json'
+        )
+        return gcsfs.GCSFileSystem(token=credentials)
+
+@st.cache_data#(ttl=config.CACHE_TTL)
+def load_data(gcs_path):
+    fs = get_gcs_filesystem()
+    return pd.read_parquet(gcs_path, filesystem=fs)
+
+acids_df = pd.read_parquet(config.ACIDS_PATH)
+amines_df = pd.read_parquet(config.AMINES_PATH)
+
 
 ##### SIDEBAR #####
 

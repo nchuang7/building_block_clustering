@@ -5,3 +5,5 @@ Streamlit-plotly-events==0.0.6
 plotly>=5.18
 pandas>=2.1
 pyarrow>=14
+gcsfs
+google-auth
