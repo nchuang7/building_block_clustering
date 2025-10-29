@@ -37,22 +37,16 @@ st.title('Building Block Cluster Explorer')
 # initialize session state variables
 if 'plot_version' not in st.session_state:
     st.session_state.plot_version = 0
-
 if 'sampled_indices' not in st.session_state:
     st.session_state.sampled_indices = []
-
 if 'stratified_indices' not in st.session_state:
     st.session_state.stratified_indices = []
-
 if 'manual_indices' not in st.session_state:
     st.session_state.manual_indices = []
-
 if 'compound_index' not in st.session_state:
     st.session_state.compound_index = 0
-
 if 'highlight_ids' not in st.session_state:
     st.session_state.highlight_ids = []
-
 if 'last_selection_ids' not in st.session_state:
     st.session_state.last_selection_ids = []
 
@@ -66,27 +60,59 @@ if 'last_selection_ids' not in st.session_state:
 # load full data 
 @st.cache_resource
 def get_gcs_filesystem():
-    # check if running on Streamlit Cloud with secrets
-    if "gcp_service_account" in st.secrets:
-        credentials = service_account.Credentials.from_service_account_info(
-            st.secrets["gcp_service_account"]
-        )
-        return gcsfs.GCSFileSystem(token=credentials)
     
-    # fallback: use local file path
-    else:
-        credentials = service_account.Credentials.from_service_account_file(
-            'service_account_key.json'
-        )
-        return gcsfs.GCSFileSystem(token=credentials)
+    # production: use Streamlit secrets
+    #if "gcp_service_account" in st.secrets:
+    #    credentials = service_account.Credentials.from_service_account_info(
+    #        st.secrets["gcp_service_account"]
+    #    )
+    #    return gcsfs.GCSFileSystem(token=credentials)
+    
+    # local dev: use service account .json file
+    #else:
+        #service_account_path = os.path.join(
+        #    os.path.dirname(os.path.dirname(__file__)), 
+        #    '.streamlit/service_account_key.json'
+        #)
 
-@st.cache_data#(ttl=config.CACHE_TTL)
+        #if not os.path.exists(service_account_path):
+        #    raise FileNotFoundError(
+        #        f"Service account file not found at: {service_account_path}\n"
+        #        f"Please download your service account key and place it there, or run:\n"
+        #        f"  gcloud auth application-default login"
+        #    )
+        
+        #credentials = service_account.Credentials.from_service_account_file(
+        #    '.streamlit/service_account_key.json'
+        #)
+        #return gcsfs.GCSFileSystem(token=credentials)
+        return gcsfs.GCSFileSystem(token='google_default')
+
+@st.cache_data(ttl=config.CACHE_TTL)
 def load_data(gcs_path):
     fs = get_gcs_filesystem()
-    return pd.read_parquet(gcs_path, filesystem=fs)
+    df = pd.read_parquet(gcs_path, filesystem=fs)
+    
+    # convert cluster to categorical type
+    df['cluster'] = df['cluster'].astype('category')
 
-acids_df = pd.read_parquet(config.ACIDS_PATH)
-amines_df = pd.read_parquet(config.AMINES_PATH)
+    # downcast numeric types
+    if df['eMolecules ID'].max() < 2147483647:
+        df['eMolecules ID'] = df['eMolecules ID'].astype('int32')
+
+    float_cols = df.select_dtypes(include=['float64']).columns
+    for col in float_cols:
+        df[col] = pd.to_numeric(df[col], downcast='float')
+
+    # format price column
+    df['Price_usd'] = df['Price'].apply(lambda x: f'${x:.2f}')
+
+    return df
+
+#
+
+acids_df = load_data(config.ACIDS_PATH)
+amines_df = load_data(config.AMINES_PATH)
 
 
 ##### SIDEBAR #####
@@ -141,32 +167,60 @@ if st.sidebar.button('📊 Add Sample', width='stretch', key='add_sample'):
     cluster_counts = df['cluster'].value_counts()
     total_samples = min(sample_size, len(df))
 
-    sampled_dfs = []
+    # pre-compute cluster samples at once
+    cluster_proportions = cluster_counts / len(df)
+    samples_per_cluster = (cluster_proportions * total_samples).round().astype(int)
+    samples_per_cluster = samples_per_cluster.clip(lower=1)  # ensure at least 1 per cluster
 
-    for cluster in cluster_counts.index:
-        cluster_df = df[df['cluster'] == cluster]
+    # adjust if rounding caused incorrect number of samples
+    diff = samples_per_cluster.sum() - total_samples
+    if diff > 0:
+        # Remove excess from largest clusters
+        for _ in range(diff):
+            largest_cluster = samples_per_cluster.idxmax()
+            samples_per_cluster[largest_cluster] -= 1
+    elif diff < 0:
+        # Add deficit to largest clusters
+        for _ in range(abs(diff)):
+            largest_cluster = samples_per_cluster.idxmax()
+            samples_per_cluster[largest_cluster] += 1 
 
-        # compute samples per cluster (ensure at least 1 per cluster)
-        cluster_proportion = len(cluster_df)/len(df)
-        n_samples = max(1, round(cluster_proportion*total_samples))
+    # use groupby and vectorized operations for faster sampling
+    sampled_ids = []
+    for cluster, n_samples in samples_per_cluster.items():
+        cluster_mask = df['cluster'] == cluster
+        cluster_ids = df.loc[cluster_mask, 'eMolecules ID'].values
+        n_samples = min(n_samples, len(cluster_ids))
+        sampled_cluster_ids = pd.Series(cluster_ids).sample(n=n_samples, random_state=7).tolist()
+        sampled_ids.extend(sampled_cluster_ids)
 
-        # ensure n_samples is valid
-        n_samples = min(n_samples, len(cluster_df))
+    # sampled_dfs = []
 
-        # sample from cluster
-        sampled_cluster = cluster_df.sample(n=n_samples, random_state=7)
-        sampled_dfs.append(sampled_cluster)
+    # for cluster in cluster_counts.index:
+    #     cluster_df = df[df['cluster'] == cluster]
 
-    # combine all sampled dfs
-    combined_samples = pd.concat(sampled_dfs)
+    #     # compute samples per cluster (ensure at least 1 per cluster)
+    #     cluster_proportion = len(cluster_df)/len(df)
+    #     n_samples = max(1, round(cluster_proportion*total_samples))
+
+    #     # ensure n_samples is valid
+    #     n_samples = min(n_samples, len(cluster_df))
+
+    #     # sample from cluster
+    #     sampled_cluster = cluster_df.sample(n=n_samples, random_state=7)
+    #     sampled_dfs.append(sampled_cluster)
+
+    # # combine all sampled dfs
+    # combined_samples = pd.concat(sampled_dfs)
 
     # ensure total num samples is valid (randomly drop if too many)
-    if len(combined_samples) > total_samples:
-        combined_samples = combined_samples.sample(n=total_samples, random_state=7)
+    #if len(sampled_ids) > total_samples:
+    #    #sampled_ids = sampled_ids.sample(n=total_samples, random_state=7)
+    #    sampled_ids = pd.Series(sampled_ids).sample(n=total_samples, random_state=7).tolist()
 
-    # combine with any existing stratified samples
+    # combine with any existing stratified samples using set operations
     existing_stratified = set(st.session_state.stratified_indices)
-    new_indices = set(combined_samples['eMolecules ID'].tolist())
+    new_indices = set(sampled_ids)
     st.session_state.stratified_indices = list(existing_stratified.union(new_indices))
 
     # update combined sample indices
@@ -207,8 +261,9 @@ if st.sidebar.button('🎯 Add IDs', width='stretch', key='add_ids'):
             # Convert to integers
             manual_ids = [int(id_str.strip()) for id_str in id_strings if id_str.strip()]
                 
-            # Find matching indices in dataframe
-            matching_indices = df.loc[df['eMolecules ID'].isin(manual_ids), 'eMolecules ID'].tolist()
+            # find matching indicies using boolean indexing
+            matching_mask = df['eMolecules ID'].isin(manual_ids)
+            matching_indices = df.loc[matching_mask, 'eMolecules ID'].tolist()
                 
             if matching_indices:
                 # Add to manual indices (using set to avoid duplicates)
@@ -295,8 +350,10 @@ if st.sidebar.button('🗑️ Clear All Samples', width='stretch', type='primary
 
 # Show sampling info
 if 'sampled_indices' in st.session_state and st.session_state.sampled_indices:
-    valid_indices = [idx for idx in st.session_state.sampled_indices if idx in df['eMolecules ID'].values]
-    st.sidebar.success(f'✓ {len(valid_indices)} points sampled')
+    valid_mask = df['eMolecules ID'].isin(st.session_state.sampled_indices)
+    valid_count = valid_mask.sum()
+    #valid_indices = [idx for idx in st.session_state.sampled_indices if idx in df['eMolecules ID'].values]
+    st.sidebar.success(f'✓ {valid_count} points sampled')
 
 ##### SUMMARY INFO #####
 
@@ -313,23 +370,14 @@ with col3:
 # show cluster stats
 st.markdown('**Cluster details**')
 cluster_counts = df['cluster'].value_counts().sort_index()
-cluster_counts = cluster_counts.sort_index()
 cluster_df = pd.DataFrame({
-    'Cluster': cluster_counts.index,
+    'Cluster': cluster_counts.index.astype(str),
     'Count': cluster_counts.values,
     'Percentage (%)': (cluster_counts.values/len(df)*100).round(1)
 })
 st.dataframe(cluster_df, hide_index=True, width='content')
 
 st.divider()
-
-# dataframe formatting
-
-# convert cluster to categorical type
-df['cluster'] = df['cluster'].astype(str)
-
-# format price column
-df['Price_usd'] = df['Price'].apply(lambda x: f'${x:.2f}')
 
 ##### PLOTTING #####
 
@@ -365,8 +413,11 @@ if st.session_state.highlight_ids:
 
     # get active ID for the detail panel
     active_id = st.session_state.highlight_ids[st.session_state.compound_index]
-    if active_id in df['eMolecules ID'].values:
-        current_row = df[df['eMolecules ID'] == active_id].iloc[0]
+    matching_mask = df['eMolecules ID'] == active_id
+    if matching_mask.any():
+        current_row = df[matching_mask].iloc[0]
+    #if active_id in df['eMolecules ID'].values:
+    #    current_row = df[df['eMolecules ID'] == active_id].iloc[0]
 else:
     # no selection -> clear point halo
     st.session_state.compound_index = 0
@@ -377,16 +428,25 @@ else:
 fig = go.Figure()
 
 # manually add each cluster as a trace - use Scattergl for performance
-unique_clusters = sorted(df['cluster'].astype(str).unique(), key=int)
+#unique_clusters = sorted(df['cluster'].astype(str).unique(), key=int)
+unique_clusters = df['cluster'].cat.categories.tolist() if hasattr(df['cluster'], 'cat') else sorted(df['cluster'].unique())
+
 for i, cluster in enumerate(unique_clusters):
-    cluster_df = df[df['cluster'].astype(str) == cluster]
+    cluster_mask = df['cluster'] == cluster
+    cluster_data = df[cluster_mask]
+
+    # extract data as numpy arrays for faster processing
+    x_data = cluster_data['UMAP1'].values
+    y_data = cluster_data['UMAP2'].values
+    ids = cluster_data['eMolecules ID'].values
+    smiles = cluster_data['SMILES'].values
 
     # define custom data (eMolecule ID, SMILES)
-    cd = list(zip(cluster_df['eMolecules ID'].tolist(), cluster_df['SMILES'].tolist()))
+    cd = list(zip(ids, smiles))
 
     fig.add_trace(go.Scattergl(
-        x=cluster_df['UMAP1'],
-        y=cluster_df['UMAP2'],
+        x=x_data,
+        y=y_data,
         mode='markers',
         name=str(cluster),
         marker=dict(
@@ -404,10 +464,12 @@ for i, cluster in enumerate(unique_clusters):
 
 # add sampled points as last trace
 if st.session_state.sampled_indices:
-    valid_indices = [idx for idx in st.session_state.sampled_indices if idx in df['eMolecules ID'].values]
-    if valid_indices:
-        sampled_df = df[df['eMolecules ID'].isin(valid_indices)]
-        #sampled_df = df.loc[valid_indices]
+    #valid_indices = [idx for idx in st.session_state.sampled_indices if idx in df['eMolecules ID'].values]
+    #if valid_indices:
+
+    sampled_mask = df['eMolecules ID'].isin(st.session_state.sampled_indices)
+    if sampled_mask.any():
+        sampled_df = df[sampled_mask]
         fig.add_trace(go.Scattergl(
             x=sampled_df['UMAP1'],
             y=sampled_df['UMAP2'],
@@ -430,23 +492,26 @@ fig.update_layout(
     yaxis=dict(showgrid=True, gridwidth=1, gridcolor='lightgray', title='UMAP2'),
     height=600,
 
-            # --- Legend styling ---
+    # Legend styling 
     legend=dict(
         title_text='Cluster',
         title_font=dict(size=20, color='black'),
-        font=dict(size=22, color='black'),
+        font=dict(size=18, color='black'),
         itemsizing='constant',        # keeps marker size consistent
     )
 )
 
 # highlight selected points on plot
 if st.session_state.highlight_ids:
-    highlight_df = df[df['eMolecules ID'].isin(st.session_state.highlight_ids)]
+    # highlight_df = df[df['eMolecules ID'].isin(st.session_state.highlight_ids)]
+    highlight_mask = df['eMolecules ID'].isin(st.session_state.highlight_ids)
+    if highlight_mask.any():
+        highlight_df = df[highlight_mask]
 
-    if not highlight_df.empty:
+    #if not highlight_df.empty:
         fig.add_trace(go.Scattergl(
-            x=highlight_df['UMAP1'],
-            y=highlight_df['UMAP2'],
+            x=highlight_df['UMAP1'].values,
+            y=highlight_df['UMAP2'].values,
             mode='markers',
             name='Selected',
             hoverinfo='skip',
@@ -536,15 +601,15 @@ st.divider()
 
 if st.session_state.sampled_indices:
     # filter to valid indices that exist in current dataframe
-    valid_sampled_indices = [idx for idx in st.session_state.sampled_indices if idx in df['eMolecules ID'].values]
-        
-    if valid_sampled_indices:
-        sampled_display_df = df[df['eMolecules ID'].isin(valid_sampled_indices)]
-        #sampled_display_df = df.loc[valid_sampled_indices]
+    #valid_sampled_indices = [idx for idx in st.session_state.sampled_indices if idx in df['eMolecules ID'].values]
+
+    sampled_mask = df['eMolecules ID'].isin(st.session_state.sampled_indices)
+    if sampled_mask.any():
+        sampled_display_df = df[sampled_mask].copy()
         sampled_display_df = sampled_display_df.reset_index()
         sampled_display_df = sampled_display_df.rename(columns={'Price': 'Price (USD$)', 'cluster': 'Cluster'})
 
-        st.subheader(f'Sampled Building Block Details ({len(valid_sampled_indices)})')
+        st.subheader(f'Sampled Building Block Details ({sampled_mask.sum()})')
         st.dataframe(sampled_display_df[[
             'eMolecules ID',
             'SMILES',
@@ -556,10 +621,10 @@ if st.session_state.sampled_indices:
         ]], width='stretch')
         
         # Add download button for sampled data
-        csv = sampled_display_df.to_csv()
+        csv = sampled_display_df.to_csv(index=False)
         st.download_button(
             label="📥 Download Sampled Data as CSV",
             data=csv,
-            file_name=f'sampled_{bb_type.lower()}_{len(valid_sampled_indices)}_building_blocks.csv',
+            file_name=f'sampled_{bb_type.lower()}_{sampled_mask.sum()}_building_blocks.csv',
             mime='text/csv',
         )
